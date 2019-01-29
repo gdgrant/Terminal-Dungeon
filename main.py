@@ -1,109 +1,198 @@
-### A small 2-D dungeon-crawling game
-### Author:   gdgrant
-### Date:     11/6/2018
-
 import os
-import msvcrt
+import curses
 from dungeon import Dungeon
 
 # Game parameters
-HEIGHT        = 20
-WIDTH         = 39
-NUM_ENEMIES   = 80
-ATTACKS       = 20
-EXPLORATION   = 0.2
+EXPLORATION = 0.5
 
 
-def clear_screen():
-    """ Clear the screen in a system-aware manner """
-    os.system('cls' if os.name == 'nt' else 'clear')
+def make_new_dungeon(height, width):
+	""" Generate a new Dungeon object, populate it, and return game state """
+
+	enemies = int(height*width*0.1)
+	rewards = max(int(height*width*0.01), 2)
+	attacks = max(5,int(enemies * 0.25))
+
+	# Make and populate dungeon
+	d = Dungeon(width, height, EXPLORATION)
+	d.make_maze()
+	d.make_enemies(enemies)
+	d.make_rewards(rewards)
+
+	# Make game state
+	moves = 0
+	score = 0
+	done_status = False
+
+	return d, moves, attacks, enemies, score, done_status
 
 
-def make_new_dungeon():
-    """ Generate a new Dungeon object, populate it, and return game state """
+def render_layers(stdscr, layers_data, cx, cy, movement=False):
 
-    # Make and populate dungeon
-    d = Dungeon(WIDTH, HEIGHT, EXPLORATION)
-    d.make_maze()
-    d.make_enemies(NUM_ENEMIES)
-
-    # Make game state
-    moves = 0
-    attacks = ATTACKS
-    enemies = NUM_ENEMIES
-
-    return d, moves, attacks, enemies
+	for i, l in enumerate(layers_data):
+		for c in l:
+			xpos = c[0] + cx
+			ypos = c[1] + cy
+			char = c[2]
+			stdscr.addstr(ypos, xpos, char, curses.color_pair(i+2))
 
 
-def main():
+def key_response(stdscr, d, dirmap, atkmap, enemies, attacks, done_status):
 
-    # Set up game state
-    d, moves, attacks, enemies = make_new_dungeon()
+	# Wait for input
+	c = stdscr.getkey()
+	dscore = 0
 
-    # Set up controls
-    dirmap = {b'w':0, b'a':3, b's':2, b'd':1}
-    atkmap = {b'W':0, b'A':3, b'S':2, b'D':1}
+	# Designate defaults
+	quit_status = False
+	reset_status = False
 
-    # Begin event loop
-    while True:
+	# If the input matches a control character, respond appropriately
+	if c in dirmap.keys() and not done_status:
 
-        # Move each of the enemies (assuming the player has already
-        # moved at least once, to prevent insta-deaths)
-        if moves > 0:
-            for i in range(enemies):
-                d.move_enemy(i)
+		# Attempt to move the character
+		d.move(dirmap[c])
+		dscore = 1
 
-        # Print the dungeon after clearing the screen
-        clear_screen()
-        print(d)
+	elif c in atkmap.keys() and not done_status:
 
-        # Print display messages and current game state
-        print('[wasd] to move, [q] to quit.  | Moves: {}'.format(moves))
-        print('Shift+[wasd] to attack.       | Attacks left: {}'.format(attacks))
-        print('Goal: Reach the bottom right. | Enemies left: {}'.format(enemies))
+		# Attempt to attack an enemy or break wall, if the character
+		# has attacks left to make
+		if attacks > 0:
+			result = d.attack(atkmap[c])
 
-        # Check for death
-        if d.current_cell in d.enemies:
-            print('You died!')
-            quit()
+			# If the attack resulted in a killed enemy,
+			# record the change in game state
+			if result == 1:
+				enemies -= 1
+				dscore = 10
+			elif result == 2:
+				dscore = 50
 
-        # Check for completion
-        if d.current_cell == d.cell_ids[-1]:
-            print('Congratulations!  Dungeon complete in {} moves.\n'.format(moves))
-            quit()
+			# Remove one available attack
+			attacks -= 1
 
-        # Wait for input
-        c = msvcrt.getch()
+		else:
+			dscore = -1
 
-        # If the input matches a control character, respond appropriately
-        if c in dirmap.keys():
+	elif c == 'q' or c == 'Q':
 
-            # Attempt to move the character
-            d.move(dirmap[c])
+		# Quit if 'q' is pressed
+		quit_status = True
 
-        elif c in atkmap.keys():
+	elif c == 'r' or c == 'R':
 
-            # Attempt to attack an enemy or break wall, if the character
-            # has attacks left to make
-            if attacks > 0:
-                result = d.attack(atkmap[c])
+		# Reset if 'r' is pressed
+		reset_status = True
 
-                # If the attack resulted in a killed enemy,
-                # record the change in game state
-                if result == 1:
-                    enemies -= 1
+	return enemies, attacks, dscore, quit_status, reset_status
 
-                # Remove one available attack
-                attacks -= 1
 
-        elif c == b'q':
+def main(stdscr):
 
-            # Quit if 'q' is pressed
-            quit()
+	# Set up curses
+	curses.curs_set(False)
+	curses.use_default_colors()
 
-        # Iterate the move counter and go back to the start of the loop
-        moves += 1
+	bkgd  = 17	# Navy blue
+	walls = 54	# Black/Gray
+	rewar = 3	# Olive
+	enemy = 12	# Light blue
+	agent = 10	# Green
+	curses.init_pair(1, walls, bkgd) # Walls
+	curses.init_pair(2, rewar, bkgd) # Rewards
+	curses.init_pair(3, enemy, bkgd) # Enemies
+	curses.init_pair(4, agent, bkgd) # Player/Target
 
+	# Set up controls
+	dirmap = {'w':0, 'a':3, 's':2, 'd':1}
+	atkmap = {'W':0, 'A':3, 'S':2, 'D':1}
+
+	# Set up size information
+	height, width = stdscr.getmaxyx()
+
+	if height < 14 or width < 60:
+		stdscr.addstr(1,1,'Window must be at least 60 x 14 to play!')
+		stdscr.addstr(2,1,'Press any key to quit.')
+		stdscr.refresh()
+		stdscr.getkey()
+		quit()
+
+	dheight = (height-10)//2
+	dwidth  = (width-3)//2
+
+	dby = dheight * 2 + 1
+
+	# Cue to reset the game
+	reset_status = True
+
+	# Begin event loop
+	while True:
+
+		# Set up game state
+		if reset_status:
+			reset_status = False
+			d, moves, attacks, enemies, score, done_status = make_new_dungeon(dheight, dwidth)
+
+			stdscr.addstr(dby+7,0,' '*59)
+			stdscr.addstr(dby+8,0,' '*59)
+
+		# Move each of the enemies (assuming the player has already
+		# moved at least once, to prevent insta-deaths)
+		if moves > 0 and not done_status:
+			for i in range(enemies):
+				d.move_enemy(i)
+
+		# Check for death
+		if d.current_cell in d.enemies:
+			stdscr.addstr(dby+7,0,'You died!')
+			score -= 100 if not done_status else 0
+			done_status = True
+
+		# Check for completion
+		if d.current_cell == d.cell_ids[-1]:
+			finish_score = dheight*dwidth - moves
+			if finish_score > 0:
+				finish_score_message = 'Well done!'
+			else:
+				finish_score_message = 'Try moving faster next time...'
+
+			stdscr.addstr(dby+7,0,'Congratulations!  Dungeon complete in {} moves.'.format(moves))
+			stdscr.addstr(dby+8,0,'Bonus score: {} {}'.format(finish_score, finish_score_message))
+			score += finish_score if not done_status else 0
+			done_status = True
+		
+		# Obtain dungeon render
+		layer0, layers = d.render()
+		corner_x = 1
+		corner_y = 1
+
+		# Render the maze
+		for i, l in enumerate(layer0):
+			stdscr.addstr(corner_y+i,corner_x, l, curses.color_pair(1))
+
+		render_layers(stdscr, layers, corner_x, corner_y)
+
+		stdscr.addstr(dby+2,0,'[wasd] to move.               | Moves:        {:<4}'.format(moves))
+		stdscr.addstr(dby+3,0,'Shift+[wasd] to attack.       | Attacks left: {:<4}'.format(attacks))
+		stdscr.addstr(dby+4,0,'[r] to reset, [q] to quit.    | Enemies left: {:<4}'.format(enemies))
+		stdscr.addstr(dby+5,0,'Goal: Reach the bottom right. | Score:        {:<4}'.format(score))
+
+		# Refresh the screen
+		stdscr.refresh()
+
+		# Respond to key input
+		enemies, attacks, dscore, quit_status, reset_status = \
+			key_response(stdscr, d, dirmap, atkmap, enemies, attacks, done_status)
+		score += dscore
+
+		# Quit if requested
+		if quit_status:
+			break
+
+		# Iterate the move counter and go back to the start of the loop
+		moves += 1 if not done_status else 0
 
 if __name__ == '__main__':
-    main()
+	curses.wrapper(main)
+	curses.endwin()
